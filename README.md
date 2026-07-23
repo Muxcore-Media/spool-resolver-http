@@ -3,9 +3,9 @@
 [![Go Version](https://img.shields.io/badge/Go-1.26-blue)](https://go.dev/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-**HTTPS JSON spool tag resolver for the MuxCore fabric.**
+**HTTP(S) JSON spool tag resolver for the MuxCore fabric.**
 
-A MuxCore sidecar module that resolves tag definitions from a remote HTTP(S) spool endpoint. Given a spool URL and a tag name, it fetches the tag definition as JSON, validating the response for proper structure.
+A MuxCore sidecar module that resolves tag definitions from a remote HTTP(S) spool endpoint. Given a spool URL and a tag name, it fetches the tag definition as JSON, decoding into `contracts.TagDefinition`.
 
 ## How It Works
 
@@ -21,19 +21,22 @@ Tag request ──→ spool-resolver-http (gRPC) ──→ GET <spool_url>/<tag_
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SPOOL_RESOLVER_GRPC_ADDR` | `:9670` | gRPC listen address |
-| `MUXCORE_GRPC_ADDR` | – | Core gRPC address |
-| `MUXCORE_GRPC_INSECURE` | – | Disable TLS (dev mode) |
+| `MUXCORE_GRPC_ADDR` | – | Core gRPC / mesh address (required) |
+| `MUXCORE_MODULE_ID` | `spool-resolver-http` | Module ID override (SDK) |
+| `MUXCORE_INSECURE_DISABLE_TLS` | unset | Set to `true` to disable TLS (dev only) |
 
 ## RPCs
 
-- `ResolveTag(spoolUrl, tagName)` — fetch a tag definition from a remote spool over HTTPS
+- `ResolveTag(spoolUrl, tagName)` — `GET <spoolUrl>/<tagName>` and return a tag definition
 
-Returns the tag definition as a JSON blob, or an error message if the spool is unreachable, returns a non-200 status, or returns malformed JSON.
+On success, response carries `tag_definition_json`. Fetch/decode failures set the response `error` field (gRPC status remains OK).
 
 ## Dependencies
 
 - `google.golang.org/grpc` — gRPC service framework
-- `github.com/Muxcore-Media/core` — contracts and module SDK
+- `github.com/Muxcore-Media/core/pkg/contracts` — `TagDefinition`, module contracts
+- `github.com/Muxcore-Media/core/sdk/go/module` — sidecar lifecycle SDK
+- `github.com/Muxcore-Media/core` — spoolresolver proto
 
 ## Build & Develop
 
@@ -48,8 +51,9 @@ make docker  # build Docker image
 ## Capabilities
 
 - Registers with capability: `spool.resolver`
-- Implements `contracts.SpoolResolver`
-- Configurable HTTP client timeout (default: 30s)
+- Declares contract: `SpoolResolver` (`muxcore.json` / `ModuleInfo`)
+- Serves gRPC `SpoolResolverService` (`ResolveTag`)
+- HTTP client timeout defaults to 30s (`Config.Timeout`; not env-exposed)
 
 ## License
 
