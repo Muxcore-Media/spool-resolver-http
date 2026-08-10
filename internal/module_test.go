@@ -5,10 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	spoolresolverv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/spoolresolver/v1"
 )
+
+func testModule(srv *httptest.Server) *Module {
+	u, _ := url.Parse(srv.URL)
+	return NewModule(Config{
+		AllowedHosts: []string{u.Host, u.Hostname()},
+		AllowHTTP:    true,
+		AllowPrivate: true,
+	})
+}
 
 func TestModuleInfo(t *testing.T) {
 	m := NewModule(Config{})
@@ -34,7 +44,7 @@ func TestResolveTagSuccess(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"name":        "default",
 			"description": "default tag",
 			"version":     "1.0.0",
@@ -45,7 +55,7 @@ func TestResolveTagSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := NewModule(Config{})
+	m := testModule(srv)
 	ctx := context.Background()
 	resp, err := m.ResolveTag(ctx, &spoolresolverv1.ResolveTagRequest{
 		SpoolUrl: srv.URL,
@@ -82,9 +92,8 @@ func TestResolveTagNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := NewModule(Config{})
-	ctx := context.Background()
-	resp, err := m.ResolveTag(ctx, &spoolresolverv1.ResolveTagRequest{
+	m := testModule(srv)
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
 		SpoolUrl: srv.URL,
 		TagName:  "nonexistent",
 	})
@@ -102,9 +111,8 @@ func TestResolveTagServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := NewModule(Config{})
-	ctx := context.Background()
-	resp, err := m.ResolveTag(ctx, &spoolresolverv1.ResolveTagRequest{
+	m := testModule(srv)
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
 		SpoolUrl: srv.URL,
 		TagName:  "error",
 	})
@@ -118,13 +126,12 @@ func TestResolveTagServerError(t *testing.T) {
 
 func TestResolveTagInvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{invalid json`))
+		_, _ = w.Write([]byte(`{invalid json`))
 	}))
 	defer srv.Close()
 
-	m := NewModule(Config{})
-	ctx := context.Background()
-	resp, err := m.ResolveTag(ctx, &spoolresolverv1.ResolveTagRequest{
+	m := testModule(srv)
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
 		SpoolUrl: srv.URL,
 		TagName:  "bad",
 	})
@@ -133,6 +140,59 @@ func TestResolveTagInvalidJSON(t *testing.T) {
 	}
 	if resp.Error == "" {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestResolveTagSSRFDenied(t *testing.T) {
+	m := NewModule(Config{
+		AllowedHosts: []string{"spool.example.com"},
+		AllowHTTP:    false,
+	})
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
+		SpoolUrl: "http://169.254.169.254/latest/meta-data",
+		TagName:  "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == "" {
+		t.Fatal("expected SSRF denial")
+	}
+
+	resp, err = m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
+		SpoolUrl: "https://evil.example/tags",
+		TagName:  "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == "" {
+		t.Fatal("expected allowlist denial")
+	}
+
+	resp, err = m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
+		SpoolUrl: "https://spool.example.com/tags",
+		TagName:  "../etc/passwd",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == "" {
+		t.Fatal("expected bad tag denial")
+	}
+}
+
+func TestResolveTagEmptyAllowlist(t *testing.T) {
+	m := NewModule(Config{AllowHTTP: true, AllowPrivate: true})
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
+		SpoolUrl: "http://127.0.0.1:9/tags",
+		TagName:  "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == "" {
+		t.Fatal("expected empty allowlist denial")
 	}
 }
 
