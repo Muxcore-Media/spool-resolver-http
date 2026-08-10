@@ -92,11 +92,11 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Spool Resolver HTTP",
-		Version:      "0.1.3",
+		Version:      "0.1.4",
 		Roles:        []string{"infrastructure"},
 		Description:  "HTTPS JSON spool tag resolver with host allowlist (SSRF-hardened)",
 		Author:       "MuxCore",
-		Capabilities: []string{contracts.CapabilitySpoolResolver},
+		Capabilities: []string{contracts.CapabilitySpoolResolver, "settings"},
 		Contracts: []contracts.ContractDeclaration{
 			{
 				Repo:      "github.com/Muxcore-Media/core/pkg/contracts",
