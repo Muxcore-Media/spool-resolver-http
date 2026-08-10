@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,18 +21,24 @@ import (
 type Module struct {
 	spoolresolverv1.UnimplementedSpoolResolverServiceServer
 
-	mu       sync.RWMutex
-	client   *http.Client
-	id       string
-	grpcAddr string
-	grpcSrv  *grpc.Server
-	lis      net.Listener
+	mu           sync.RWMutex
+	client       *http.Client
+	id           string
+	grpcAddr     string
+	grpcSrv      *grpc.Server
+	lis          net.Listener
+	allowedHosts []string
+	allowHTTP    bool
+	allowPrivate bool
 }
 
 type Config struct {
-	ID       string
-	GRPCAddr string
-	Timeout  time.Duration
+	ID           string
+	GRPCAddr     string
+	Timeout      time.Duration
+	AllowedHosts []string
+	AllowHTTP    bool
+	AllowPrivate bool
 }
 
 func NewModule(cfg Config) *Module {
@@ -47,22 +54,45 @@ func NewModule(cfg Config) *Module {
 	if v := os.Getenv("SPOOL_RESOLVER_GRPC_ADDR"); v != "" {
 		cfg.GRPCAddr = v
 	}
-	return &Module{
-		id:       cfg.ID,
-		grpcAddr: cfg.GRPCAddr,
-		client: &http.Client{
-			Timeout: cfg.Timeout,
+	if len(cfg.AllowedHosts) == 0 {
+		cfg.AllowedHosts = parseAllowlist(os.Getenv("SPOOL_RESOLVER_ALLOWED_HOSTS"))
+	}
+	if !cfg.AllowHTTP {
+		cfg.AllowHTTP = envBool("SPOOL_RESOLVER_ALLOW_HTTP")
+	}
+	if !cfg.AllowPrivate {
+		cfg.AllowPrivate = envBool("SPOOL_RESOLVER_ALLOW_PRIVATE")
+	}
+
+	m := &Module{
+		id:           cfg.ID,
+		grpcAddr:     cfg.GRPCAddr,
+		allowedHosts: cfg.AllowedHosts,
+		allowHTTP:    cfg.AllowHTTP,
+		allowPrivate: cfg.AllowPrivate,
+	}
+	m.client = &http.Client{
+		Timeout: cfg.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return fmt.Errorf("too many redirects")
+			}
+			if _, err := validateSpoolURL(req.URL.String(), m.allowedHosts, m.allowHTTP, m.allowPrivate); err != nil {
+				return err
+			}
+			return nil
 		},
 	}
+	return m
 }
 
 func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Spool Resolver HTTP",
-		Version:      "0.1.0",
+		Version:      "0.1.1",
 		Roles:        []string{"infrastructure"},
-		Description:  "HTTPS JSON spool tag resolver provider",
+		Description:  "HTTPS JSON spool tag resolver with host allowlist (SSRF-hardened)",
 		Author:       "MuxCore",
 		Capabilities: []string{contracts.CapabilitySpoolResolver},
 		Contracts: []contracts.ContractDeclaration{
@@ -83,7 +113,11 @@ func (m *Module) Init(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", m.grpcAddr, err)
 	}
 	m.lis = lis
-	slog.Info("spool-resolver-http initialized", "addr", m.grpcAddr)
+	slog.Info("spool-resolver-http initialized",
+		"addr", m.grpcAddr,
+		"allowed_hosts", len(m.allowedHosts),
+		"allow_http", m.allowHTTP,
+	)
 	return nil
 }
 
@@ -113,9 +147,16 @@ func (m *Module) Health(ctx context.Context) error {
 }
 
 func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTagRequest) (*spoolresolverv1.ResolveTagResponse, error) {
-	url := fmt.Sprintf("%s/%s", req.GetSpoolUrl(), req.GetTagName())
+	if err := safeTagName(req.GetTagName()); err != nil {
+		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
+	}
+	base, err := validateSpoolURL(req.GetSpoolUrl(), m.allowedHosts, m.allowHTTP, m.allowPrivate)
+	if err != nil {
+		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
+	}
+	fetchURL := joinSpoolURL(base, strings.TrimSpace(req.GetTagName()))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return &spoolresolverv1.ResolveTagResponse{
 			Error: fmt.Sprintf("create request: %v", err),
