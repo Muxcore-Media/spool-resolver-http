@@ -16,6 +16,7 @@ import (
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	spoolresolverv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/spoolresolver/v1"
+	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
 )
 
 type Module struct {
@@ -77,7 +78,8 @@ func NewModule(cfg Config) *Module {
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")
 			}
-			if _, err := validateSpoolURL(req.URL.String(), m.allowedHosts, m.allowHTTP, m.allowPrivate); err != nil {
+			hosts, allowHTTP, allowPrivate := m.policySnapshot()
+			if _, err := validateSpoolURL(req.URL.String(), hosts, allowHTTP, allowPrivate); err != nil {
 				return err
 			}
 			return nil
@@ -90,7 +92,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Spool Resolver HTTP",
-		Version:      "0.1.2",
+		Version:      "0.1.3",
 		Roles:        []string{"infrastructure"},
 		Description:  "HTTPS JSON spool tag resolver with host allowlist (SSRF-hardened)",
 		Author:       "MuxCore",
@@ -124,6 +126,7 @@ func (m *Module) Init(ctx context.Context) error {
 func (m *Module) Start(ctx context.Context) error {
 	m.grpcSrv = grpc.NewServer()
 	spoolresolverv1.RegisterSpoolResolverServiceServer(m.grpcSrv, m)
+	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
 	go func() {
 		slog.Info("spool-resolver-http gRPC service started", "addr", m.grpcAddr)
 		if err := m.grpcSrv.Serve(m.lis); err != nil {
@@ -150,7 +153,8 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 	if err := safeTagName(req.GetTagName()); err != nil {
 		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
 	}
-	base, err := validateSpoolURL(req.GetSpoolUrl(), m.allowedHosts, m.allowHTTP, m.allowPrivate)
+	hosts, allowHTTP, allowPrivate := m.policySnapshot()
+	base, err := validateSpoolURL(req.GetSpoolUrl(), hosts, allowHTTP, allowPrivate)
 	if err != nil {
 		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
 	}

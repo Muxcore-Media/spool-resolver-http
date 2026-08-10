@@ -212,3 +212,31 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSettingsAllowlistLive(t *testing.T) {
+	m := NewModule(Config{AllowedHosts: []string{"old.example"}, AllowHTTP: false})
+	defs := m.Settings()
+	if len(defs) != 3 || defs[0].Key != "allowed_hosts" {
+		t.Fatalf("Settings=%+v", defs)
+	}
+	if err := m.UpdateSetting("allowed_hosts", "spool.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpdateSetting("allow_http", "true"); err != nil {
+		t.Fatal(err)
+	}
+	hosts, allowHTTP, _ := m.policySnapshot()
+	if len(hosts) != 1 || hosts[0] != "spool.example.com" || !allowHTTP {
+		t.Fatalf("policy hosts=%v allowHTTP=%v", hosts, allowHTTP)
+	}
+	resp, err := m.ResolveTag(context.Background(), &spoolresolverv1.ResolveTagRequest{
+		SpoolUrl: "https://evil.example/tags",
+		TagName:  "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == "" {
+		t.Fatal("expected allowlist denial for evil.example")
+	}
+}
