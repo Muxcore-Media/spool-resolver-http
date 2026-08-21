@@ -47,7 +47,7 @@ func NewModule(cfg Config) *Module {
 		cfg.ID = "spool-resolver-http"
 	}
 	if cfg.GRPCAddr == "" {
-		cfg.GRPCAddr = ":9670"
+		cfg.GRPCAddr = ":9675"
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second

@@ -20,7 +20,7 @@ Tag request ──→ spool-resolver-http (gRPC) ──→ GET <spool_url>/<tag_
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPOOL_RESOLVER_GRPC_ADDR` | `:9670` | gRPC listen address |
+| `SPOOL_RESOLVER_GRPC_ADDR` | `:9675` | gRPC listen address |
 | `SPOOL_RESOLVER_ALLOWED_HOSTS` | *(required, empty=deny)* | Comma-separated host allowlist for spool URLs |
 | `SPOOL_RESOLVER_ALLOW_HTTP` | `false` | Permit `http://` (local/dev only) |
 | `SPOOL_RESOLVER_ALLOW_PRIVATE` | `false` | Permit private/link-local resolved IPs |
