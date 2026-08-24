@@ -173,7 +173,7 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 			Error: fmt.Sprintf("fetch tag: %v", err),
 		}, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return &spoolresolverv1.ResolveTagResponse{
