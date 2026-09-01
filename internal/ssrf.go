@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -93,7 +94,38 @@ func isPrivateOrLocalIP(ip net.IP) bool {
 	return false
 }
 
-func validateSpoolURL(raw string, allowlist []string, allowHTTP, allowPrivate bool) (*url.URL, error) {
+func stripPort(hostport string) string {
+	h, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return hostport
+	}
+	return h
+}
+
+func blockPrivateHost(ctx context.Context, host string, allowPrivate bool) error {
+	if allowPrivate {
+		return nil
+	}
+	hostOnly := stripPort(host)
+	if ip := net.ParseIP(hostOnly); ip != nil {
+		if isPrivateOrLocalIP(ip) {
+			return fmt.Errorf("spool host IP %s is not allowed (private/loopback)", ip)
+		}
+		return nil
+	}
+	addrs, err := net.DefaultResolver.LookupHost(ctx, hostOnly)
+	if err != nil {
+		return fmt.Errorf("spool host lookup failed for %q: %w", hostOnly, err)
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && isPrivateOrLocalIP(ip) {
+			return fmt.Errorf("spool host %q resolves to private IP %q — blocked", hostOnly, a)
+		}
+	}
+	return nil
+}
+
+func validateSpoolURL(ctx context.Context, raw string, allowlist []string, allowHTTP, allowPrivate bool) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, fmt.Errorf("spool URL required")
@@ -124,18 +156,12 @@ func validateSpoolURL(raw string, allowlist []string, allowHTTP, allowPrivate bo
 	if !hostAllowed(u.Host, allowlist) {
 		return nil, fmt.Errorf("spool host %q not in allowlist", u.Hostname())
 	}
-	// Block literal private IPs unless explicitly allowed (httptest / local spool).
-	if host := u.Hostname(); host != "" {
-		if ip := net.ParseIP(host); ip != nil {
-			if isPrivateOrLocalIP(ip) && !allowPrivate {
-				return nil, fmt.Errorf("spool host IP %s is not allowed (private/loopback)", ip)
-			}
-		}
+	if err := blockPrivateHost(ctx, u.Host, allowPrivate); err != nil {
+		return nil, err
 	}
 	return u, nil
 }
 
 func joinSpoolURL(base *url.URL, tag string) string {
-	b := strings.TrimRight(base.String(), "/")
-	return b + "/" + tag
+	return base.JoinPath("tags", tag+".json").String()
 }
