@@ -3,11 +3,14 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,13 @@ import (
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	spoolresolverv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/spoolresolver/v1"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+)
+
+const (
+	defaultGRPCAddr = "127.0.0.1:9675"
+	defaultTimeout  = 30 * time.Second
+	maxTagBodyBytes = 1 << 20
+	envTimeout      = "SPOOL_RESOLVER_TIMEOUT"
 )
 
 type Module struct {
@@ -31,6 +41,7 @@ type Module struct {
 	allowedHosts []string
 	allowHTTP    bool
 	allowPrivate bool
+	timeout      time.Duration
 }
 
 type Config struct {
@@ -47,13 +58,21 @@ func NewModule(cfg Config) *Module {
 		cfg.ID = "spool-resolver-http"
 	}
 	if cfg.GRPCAddr == "" {
-		cfg.GRPCAddr = ":9675"
+		cfg.GRPCAddr = defaultGRPCAddr
 	}
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 30 * time.Second
+		cfg.Timeout = defaultTimeout
 	}
-	if v := os.Getenv("SPOOL_RESOLVER_GRPC_ADDR"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("SPOOL_RESOLVER_GRPC_ADDR")); v != "" {
 		cfg.GRPCAddr = v
+	}
+	if v := strings.TrimSpace(os.Getenv(envTimeout)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			slog.Warn("invalid SPOOL_RESOLVER_TIMEOUT; using default", "value", v, "default", defaultTimeout)
+		} else {
+			cfg.Timeout = d
+		}
 	}
 	if len(cfg.AllowedHosts) == 0 {
 		cfg.AllowedHosts = parseAllowlist(os.Getenv("SPOOL_RESOLVER_ALLOWED_HOSTS"))
@@ -71,28 +90,64 @@ func NewModule(cfg Config) *Module {
 		allowedHosts: cfg.AllowedHosts,
 		allowHTTP:    cfg.AllowHTTP,
 		allowPrivate: cfg.AllowPrivate,
+		timeout:      cfg.Timeout,
 	}
-	m.client = &http.Client{
-		Timeout: cfg.Timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("too many redirects")
-			}
-			hosts, allowHTTP, allowPrivate := m.policySnapshot()
-			if _, err := validateSpoolURL(req.URL.String(), hosts, allowHTTP, allowPrivate); err != nil {
-				return err
-			}
-			return nil
-		},
-	}
+	m.client = m.newHTTPClient(cfg.Timeout)
 	return m
+}
+
+func (m *Module) newHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: m.dialContext,
+		},
+		CheckRedirect: m.checkRedirect,
+	}
+}
+
+func (m *Module) rebuildHTTPClient() {
+	m.mu.RLock()
+	timeout := m.timeout
+	m.mu.RUnlock()
+	client := m.newHTTPClient(timeout)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+}
+
+func (m *Module) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	_, _, allowPrivate := m.policySnapshot()
+	if err := blockPrivateHost(ctx, host, allowPrivate); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	timeout := m.timeout
+	m.mu.RUnlock()
+	d := net.Dialer{Timeout: timeout}
+	return d.DialContext(ctx, network, addr)
+}
+
+func (m *Module) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 3 {
+		return fmt.Errorf("too many redirects")
+	}
+	hosts, allowHTTP, allowPrivate := m.policySnapshot()
+	if _, err := validateSpoolURL(req.Context(), req.URL.String(), hosts, allowHTTP, allowPrivate); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Spool Resolver HTTP",
-		Version:      "0.1.4",
+		Version:      "0.1.5",
 		Roles:        []string{"infrastructure"},
 		Description:  "HTTPS JSON spool tag resolver with host allowlist (SSRF-hardened)",
 		Author:       "MuxCore",
@@ -101,11 +156,10 @@ func (m *Module) Info() contracts.ModuleInfo {
 			{
 				Repo:      "github.com/Muxcore-Media/core/pkg/contracts",
 				Interface: "SpoolResolver",
-				Version:   "v0.4.0",
+				Version:   "v0.5.8",
 			},
 		},
-		MinCoreVersion: "0.4.0",
-		HTTPAddr:       m.grpcAddr,
+		MinCoreVersion: "0.5.8",
 	}
 }
 
@@ -119,17 +173,20 @@ func (m *Module) Init(ctx context.Context) error {
 		"addr", m.grpcAddr,
 		"allowed_hosts", len(m.allowedHosts),
 		"allow_http", m.allowHTTP,
+		"timeout", m.timeout,
 	)
 	return nil
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	m.grpcSrv = grpc.NewServer()
-	spoolresolverv1.RegisterSpoolResolverServiceServer(m.grpcSrv, m)
-	modulesdk.RegisterSettings(m.grpcSrv, m.id, m)
+	srv := grpc.NewServer()
+	lis := m.lis
+	m.grpcSrv = srv
+	spoolresolverv1.RegisterSpoolResolverServiceServer(srv, m)
+	modulesdk.RegisterSettings(srv, m.id, m)
 	go func() {
 		slog.Info("spool-resolver-http gRPC service started", "addr", m.grpcAddr)
-		if err := m.grpcSrv.Serve(m.lis); err != nil {
+		if err := srv.Serve(lis); err != nil {
 			slog.Error("spool-resolver-http gRPC serve error", "error", err)
 		}
 	}()
@@ -139,6 +196,11 @@ func (m *Module) Start(ctx context.Context) error {
 func (m *Module) Stop(ctx context.Context) error {
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
+		m.grpcSrv = nil
+	}
+	if m.lis != nil {
+		_ = m.lis.Close()
+		m.lis = nil
 	}
 	m.client.CloseIdleConnections()
 	slog.Info("spool-resolver-http stopped")
@@ -146,6 +208,12 @@ func (m *Module) Stop(ctx context.Context) error {
 }
 
 func (m *Module) Health(ctx context.Context) error {
+	if m.lis == nil {
+		return errors.New("listener not initialized")
+	}
+	if m.grpcSrv == nil {
+		return errors.New("gRPC server not serving")
+	}
 	return nil
 }
 
@@ -154,7 +222,7 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
 	}
 	hosts, allowHTTP, allowPrivate := m.policySnapshot()
-	base, err := validateSpoolURL(req.GetSpoolUrl(), hosts, allowHTTP, allowPrivate)
+	base, err := validateSpoolURL(ctx, req.GetSpoolUrl(), hosts, allowHTTP, allowPrivate)
 	if err != nil {
 		return &spoolresolverv1.ResolveTagResponse{Error: err.Error()}, nil
 	}
@@ -167,7 +235,11 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 		}, nil
 	}
 
-	resp, err := m.client.Do(httpReq)
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return &spoolresolverv1.ResolveTagResponse{
 			Error: fmt.Sprintf("fetch tag: %v", err),
@@ -181,8 +253,21 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 		}, nil
 	}
 
+	limited := io.LimitReader(resp.Body, maxTagBodyBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return &spoolresolverv1.ResolveTagResponse{
+			Error: fmt.Sprintf("read tag body: %v", err),
+		}, nil
+	}
+	if len(body) > maxTagBodyBytes {
+		return &spoolresolverv1.ResolveTagResponse{
+			Error: fmt.Sprintf("tag body exceeds %d bytes", maxTagBodyBytes),
+		}, nil
+	}
+
 	var tag contracts.TagDefinition
-	if err := json.NewDecoder(resp.Body).Decode(&tag); err != nil {
+	if err := json.Unmarshal(body, &tag); err != nil {
 		return &spoolresolverv1.ResolveTagResponse{
 			Error: fmt.Sprintf("decode tag: %v", err),
 		}, nil
@@ -196,6 +281,21 @@ func (m *Module) ResolveTag(ctx context.Context, req *spoolresolverv1.ResolveTag
 	}
 
 	return &spoolresolverv1.ResolveTagResponse{TagDefinitionJson: raw}, nil
+}
+
+func parseTimeoutSetting(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("timeout required")
+	}
+	if sec, err := strconv.Atoi(value); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("invalid timeout %q", value)
+	}
+	return d, nil
 }
 
 var _ contracts.Module = (*Module)(nil)

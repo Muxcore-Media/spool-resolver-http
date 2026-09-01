@@ -25,6 +25,9 @@ func (m *Module) policySnapshot() (hosts []string, allowHTTP, allowPrivate bool)
 
 func (m *Module) settingsDefs() []contracts.SettingDef {
 	hosts, allowHTTP, allowPrivate := m.policySnapshot()
+	m.mu.RLock()
+	timeout := m.timeout
+	m.mu.RUnlock()
 	return []contracts.SettingDef{
 		{
 			Key:         "allowed_hosts",
@@ -52,6 +55,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Default:     "false",
 			Description: "Permit private/link-local targets (SPOOL_RESOLVER_ALLOW_PRIVATE)",
 			Group:       "SSRF",
+		},
+		{
+			Key:         "timeout",
+			Label:       "HTTP Timeout",
+			Type:        contracts.SettingTypeString,
+			Value:       timeout.String(),
+			Default:     defaultTimeout.String(),
+			Description: "Outbound fetch timeout (SPOOL_RESOLVER_TIMEOUT; duration or seconds)",
+			Group:       "HTTP",
 		},
 	}
 }
@@ -92,6 +104,16 @@ func (m *Module) updateSetting(key, value string) error {
 		m.mu.Lock()
 		m.allowPrivate = b
 		m.mu.Unlock()
+		return nil
+	case "timeout", envTimeout:
+		d, err := parseTimeoutSetting(value)
+		if err != nil {
+			return fmt.Errorf("invalid timeout: %w", err)
+		}
+		m.mu.Lock()
+		m.timeout = d
+		m.mu.Unlock()
+		m.rebuildHTTPClient()
 		return nil
 	default:
 		return fmt.Errorf("unknown setting %q", key)

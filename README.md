@@ -7,10 +7,12 @@
 
 A MuxCore sidecar module that resolves tag definitions from a remote HTTP(S) spool endpoint. Given a spool URL and a tag name, it fetches the tag definition as JSON, decoding into `contracts.TagDefinition`.
 
+**Note:** `muxcored` still resolves tags in-process via `core/internal/spool.FetchTag` (`core/internal/grpcmesh/spool_server.go`). This sidecar is for modules that dial `SpoolResolverService` over gRPC; core does not dial it today.
+
 ## How It Works
 
 ```
-Tag request ──→ spool-resolver-http (gRPC) ──→ GET <spool_url>/<tag_name>
+Tag request ──→ spool-resolver-http (gRPC) ──→ GET <spool_url>/tags/<tag_name>.json
                                                     │
                                                     ▼
                                               JSON TagDefinition returned
@@ -20,17 +22,20 @@ Tag request ──→ spool-resolver-http (gRPC) ──→ GET <spool_url>/<tag_
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPOOL_RESOLVER_GRPC_ADDR` | `:9675` | gRPC listen address |
+| `SPOOL_RESOLVER_GRPC_ADDR` | `127.0.0.1:9675` | gRPC listen address (localhost-only; unauthenticated SSRF proxy if exposed) |
 | `SPOOL_RESOLVER_ALLOWED_HOSTS` | *(required, empty=deny)* | Comma-separated host allowlist for spool URLs |
 | `SPOOL_RESOLVER_ALLOW_HTTP` | `false` | Permit `http://` (local/dev only) |
 | `SPOOL_RESOLVER_ALLOW_PRIVATE` | `false` | Permit private/link-local resolved IPs |
+| `SPOOL_RESOLVER_TIMEOUT` | `30s` | Outbound HTTP fetch timeout |
 | `MUXCORE_GRPC_ADDR` | – | Core gRPC / mesh address (required) |
 | `MUXCORE_MODULE_ID` | `spool-resolver-http` | Module ID override (SDK) |
 | `MUXCORE_INSECURE_DISABLE_TLS` | unset | Set to `true` to disable TLS (dev only) |
 
+Official spool allowlist for `_mvp/run-host.sh` when `MVP_ENABLE_SPOOL_RESOLVER=1`: `github.com,raw.githubusercontent.com`.
+
 ## RPCs
 
-- `ResolveTag(spoolUrl, tagName)` — `GET <spoolUrl>/<tagName>` and return a tag definition
+- `ResolveTag(spoolUrl, tagName)` — `GET <spoolUrl>/tags/<tagName>.json` and return a tag definition
 
 On success, response carries `tag_definition_json`. Fetch/decode failures set the response `error` field (gRPC status remains OK).
 
@@ -55,8 +60,8 @@ make docker  # build Docker image
 
 - Registers with capability: `spool.resolver`
 - Declares contract: `SpoolResolver` (`muxcore.json` / `ModuleInfo`)
-- Serves gRPC `SpoolResolverService` (`ResolveTag`)
-- HTTP client timeout defaults to 30s (`Config.Timeout`; not env-exposed)
+- Serves gRPC `SpoolResolverService` (`ResolveTag`); gRPC-only (no HTTP listen surface)
+- Live settings: `allowed_hosts`, `allow_http`, `allow_private`, `timeout`
 
 ## License
 

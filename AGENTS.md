@@ -8,7 +8,7 @@ MuxCore sidecar module (`spool-resolver-http`). Workspace deploy and SSH: [`../A
 |-------|-------|
 | Directory | `spool-resolver-http` |
 | Capabilities | see muxcore.json |
-| Contracts | none declared |
+| Contracts | SpoolResolver (see muxcore.json) |
 
 ## Agent rules
 
