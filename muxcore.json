@@ -1,7 +1,7 @@
 {
   "name": "Spool Resolver HTTP",
   "description": "HTTPS JSON spool tag resolver provider",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "author": "MuxCore",
   "roles": [
     "infrastructure"
