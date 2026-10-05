@@ -20,6 +20,7 @@ import (
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	spoolresolverv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/spoolresolver/v1"
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	manifest "github.com/Muxcore-Media/spool-resolver-http"
 )
 
 const (
@@ -147,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:           m.id,
 		Name:         "Spool Resolver HTTP",
-		Version:      "0.1.5",
+		Version:      modulesdk.ManifestVersion(manifest.ManifestJSON),
 		Roles:        []string{"infrastructure"},
 		Description:  "HTTPS JSON spool tag resolver with host allowlist (SSRF-hardened)",
 		Author:       "MuxCore",
