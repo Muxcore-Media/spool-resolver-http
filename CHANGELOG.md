@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## [0.1.5] - 2026-10-05
+
+### Changed
+- CI runs on GitHub-hosted runners from the umbrella template; retired-origin workflows removed.
+- Dependencies resolve from published GitHub tags (no filesystem `replace`); requires core v0.6.0.
+
 ## [0.1.5] — 2026-08-31
 
 ### Added
@@ -14,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 1 MiB tag body cap via `io.LimitReader`
 - `SPOOL_RESOLVER_TIMEOUT` env and live `timeout` setting
 - SSRF tests: redirect re-validation, userinfo URLs, empty tag name, `allow_private` toggle, unknown setting key
-- Forgejo CI: sibling `core` checkout, `golangci-lint`, `go test -race`
+- CI: sibling `core` checkout, `golangci-lint`, `go test -race`
 
 ### Changed
 
